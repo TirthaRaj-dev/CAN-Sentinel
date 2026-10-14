@@ -5,377 +5,228 @@ from datetime import datetime
 
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtWidgets import (
-    QApplication,
-    QMainWindow,
-    QWidget,
-    QLabel,
-    QPushButton,
-    QVBoxLayout,
-    QHBoxLayout,
-    QTableWidget,
-    QTableWidgetItem,
-    QHeaderView,
-    QTextEdit,
-    QLineEdit,
-    QComboBox,
-    QFileDialog,
-    QMessageBox,
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QLabel, QPushButton, QTableWidget, QTableWidgetItem, QTextEdit, QLineEdit,
+    QComboBox, QFileDialog, QMessageBox, QFrame, QHeaderView, QTabWidget
 )
 
 
 class CanSentinelDashboard(QMainWindow):
-    """CAN-Sentinel demo dashboard using simulated CAN traffic."""
-
     def __init__(self):
         super().__init__()
+        self.setWindowTitle("CAN-Sentinel | Automotive ECU Intrusion Detection")
+        self.resize(1280, 820)
 
-        self.setWindowTitle("CAN-Sentinel | ECU Intrusion Detection")
-        self.resize(1150, 800)
-        self.setMinimumSize(900, 650)
-
+        # Traffic records and alert history are deliberately stored separately.
+        # Clearing the visible display does not delete the persistent-in-session
+        # records used by CSV export.
+        self.traffic_records = []
+        self.alert_history = []
         self.message_count = 0
         self.alert_count = 0
+        self.monitoring = False
 
-        # Keep the traffic records separately from the visible table.
-        # Filters change the table view without deleting the stored records.
-        self.traffic_records = []
-
-        # Monitoring timer
         self.timer = QTimer(self)
-        self.timer.timeout.connect(self.generate_message)
+        self.timer.timeout.connect(self.generate_can_message)
 
-        # Main widget and layout
-        central = QWidget()
-        self.setCentralWidget(central)
+        self.build_ui()
+        self.update_summary()
 
-        layout = QVBoxLayout(central)
-        layout.setContentsMargins(22, 18, 22, 18)
-        layout.setSpacing(12)
+    def build_ui(self):
+        root = QWidget()
+        self.setCentralWidget(root)
+        outer = QVBoxLayout(root)
+        outer.setContentsMargins(18, 16, 18, 16)
+        outer.setSpacing(12)
 
-        # Header
+        header = QHBoxLayout()
+        title_box = QVBoxLayout()
         title = QLabel("CAN-SENTINEL")
-        title.setObjectName("title")
-        layout.addWidget(title)
-
-        subtitle = QLabel("AUTOMOTIVE ECU INTRUSION DETECTION SYSTEM")
+        title.setObjectName("mainTitle")
+        subtitle = QLabel("Automotive ECU Intrusion Detection System • Demonstration Mode")
         subtitle.setObjectName("subtitle")
-        layout.addWidget(subtitle)
+        title_box.addWidget(title)
+        title_box.addWidget(subtitle)
+        header.addLayout(title_box)
+        header.addStretch()
+        self.status_label = QLabel("● STOPPED")
+        self.status_label.setObjectName("statusStopped")
+        header.addWidget(self.status_label)
+        outer.addLayout(header)
 
-        # Monitoring status
-        status_row = QHBoxLayout()
-        status_heading = QLabel("MONITORING STATUS")
-        status_heading.setObjectName("sectionHeading")
+        summary = QGridLayout()
+        summary.setSpacing(10)
+        self.total_card, self.total_value = self.make_card("TOTAL CAN MESSAGES")
+        self.alert_card, self.alert_value = self.make_card("TOTAL ALERTS")
+        self.normal_card, self.normal_value = self.make_card("NORMAL MESSAGES")
+        self.threat_card, self.threat_value = self.make_card("LATEST ALERT")
+        summary.addWidget(self.total_card, 0, 0)
+        summary.addWidget(self.alert_card, 0, 1)
+        summary.addWidget(self.normal_card, 0, 2)
+        summary.addWidget(self.threat_card, 0, 3)
+        outer.addLayout(summary)
 
-        self.monitoring_status = QLabel("● STOPPED")
-        self.monitoring_status.setObjectName("stoppedStatus")
+        controls = QHBoxLayout()
+        self.start_button = QPushButton("▶ Start Monitoring")
+        self.start_button.setObjectName("primaryButton")
+        self.start_button.clicked.connect(self.start_monitoring)
+        self.stop_button = QPushButton("■ Stop Monitoring")
+        self.stop_button.clicked.connect(self.stop_monitoring)
+        self.clear_display_button = QPushButton("Clear Traffic Display")
+        self.clear_display_button.setToolTip(
+            "Clears the visible traffic table only. Stored traffic and alert history remain available for CSV export."
+        )
+        self.clear_display_button.clicked.connect(self.clear_traffic_display)
+        self.clear_all_button = QPushButton("Clear All Session Data")
+        self.clear_all_button.setObjectName("dangerButton")
+        self.clear_all_button.setToolTip(
+            "Permanently clears traffic and alert records from this running session."
+        )
+        self.clear_all_button.clicked.connect(self.clear_all_session_data)
+        controls.addWidget(self.start_button)
+        controls.addWidget(self.stop_button)
+        controls.addWidget(self.clear_display_button)
+        controls.addWidget(self.clear_all_button)
+        controls.addStretch()
+        outer.addLayout(controls)
 
-        status_row.addWidget(status_heading)
-        status_row.addStretch()
-        status_row.addWidget(self.monitoring_status)
-        layout.addLayout(status_row)
+        self.tabs = QTabWidget()
+        outer.addWidget(self.tabs, 1)
 
-        # Summary cards
-        summary = QHBoxLayout()
-        summary.setSpacing(12)
-
-        self.total_label = QLabel("Total Messages\n0")
-        self.alert_label = QLabel("Intrusion Alerts\n0")
-        self.threat_label = QLabel("Threat Level\nLOW")
-
-        for label in (
-            self.total_label,
-            self.alert_label,
-            self.threat_label,
-        ):
-            label.setObjectName("summaryCard")
-            label.setAlignment(Qt.AlignCenter)
-            label.setMinimumHeight(70)
-            summary.addWidget(label)
-
-        self.threat_label.setObjectName("lowThreat")
-        layout.addLayout(summary)
-
-        # Traffic section
-        heading = QLabel("CAN TRAFFIC MONITOR")
-        heading.setObjectName("sectionHeading")
-        layout.addWidget(heading)
-
-        # Day 4: traffic filters
+        # Traffic tab retains Day 4 filtering and CSV export.
+        traffic_tab = QWidget()
+        traffic_layout = QVBoxLayout(traffic_tab)
         filter_row = QHBoxLayout()
-        filter_row.setSpacing(10)
-
-        filter_label = QLabel("Filter CAN ID:")
+        filter_row.addWidget(QLabel("CAN ID:"))
         self.can_id_filter = QLineEdit()
-        self.can_id_filter.setPlaceholderText("e.g. 0x100 (leave blank for all)")
-        self.can_id_filter.setClearButtonEnabled(True)
-        self.can_id_filter.textChanged.connect(self.apply_filters)
-
-        status_filter_label = QLabel("Status:")
+        self.can_id_filter.setPlaceholderText("e.g. 0x100")
+        self.can_id_filter.textChanged.connect(self.apply_traffic_filters)
+        filter_row.addWidget(self.can_id_filter)
+        filter_row.addWidget(QLabel("Status:"))
         self.status_filter = QComboBox()
         self.status_filter.addItems(["All", "NORMAL", "SUSPICIOUS"])
-        self.status_filter.currentTextChanged.connect(self.apply_filters)
+        self.status_filter.currentTextChanged.connect(self.apply_traffic_filters)
+        filter_row.addWidget(self.status_filter)
+        self.export_traffic_button = QPushButton("Export Filtered Traffic CSV")
+        self.export_traffic_button.clicked.connect(self.export_filtered_traffic)
+        filter_row.addWidget(self.export_traffic_button)
+        traffic_layout.addLayout(filter_row)
 
-        self.export_button = QPushButton("Export Filtered CSV")
-        self.export_button.setObjectName("exportButton")
-        self.export_button.clicked.connect(self.export_traffic_csv)
+        self.traffic_table = QTableWidget(0, 4)
+        self.traffic_table.setHorizontalHeaderLabels(["Timestamp", "CAN ID", "Payload", "Status"])
+        self.traffic_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.traffic_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.traffic_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.traffic_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.traffic_table.setAlternatingRowColors(True)
+        self.traffic_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        traffic_layout.addWidget(self.traffic_table)
+        self.tabs.addTab(traffic_tab, "CAN Traffic")
 
-        filter_row.addWidget(filter_label)
-        filter_row.addWidget(self.can_id_filter, 2)
-        filter_row.addWidget(status_filter_label)
-        filter_row.addWidget(self.status_filter, 1)
-        filter_row.addWidget(self.export_button)
-        layout.addLayout(filter_row)
+        # Separate alert history tab.
+        alert_tab = QWidget()
+        alert_layout = QVBoxLayout(alert_tab)
+        alert_controls = QHBoxLayout()
+        alert_controls.addWidget(QLabel("Severity:"))
+        self.severity_filter = QComboBox()
+        self.severity_filter.addItems(["All", "LOW", "MEDIUM", "HIGH", "CRITICAL"])
+        self.severity_filter.currentTextChanged.connect(self.refresh_alert_table)
+        alert_controls.addWidget(self.severity_filter)
+        alert_controls.addWidget(QLabel("Reason contains:"))
+        self.reason_filter = QLineEdit()
+        self.reason_filter.setPlaceholderText("Search alert reason")
+        self.reason_filter.textChanged.connect(self.refresh_alert_table)
+        alert_controls.addWidget(self.reason_filter)
+        self.export_alerts_button = QPushButton("Export Alert History CSV")
+        self.export_alerts_button.setObjectName("primaryButton")
+        self.export_alerts_button.clicked.connect(self.export_alert_history)
+        alert_controls.addWidget(self.export_alerts_button)
+        alert_layout.addLayout(alert_controls)
 
-        self.filter_summary = QLabel("Showing 0 of 0 retained records")
-        self.filter_summary.setObjectName("filterSummary")
-        layout.addWidget(self.filter_summary)
-
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(
-            ["Timestamp", "CAN ID", "Payload", "Status"]
+        self.alert_table = QTableWidget(0, 5)
+        self.alert_table.setHorizontalHeaderLabels(
+            ["Timestamp", "CAN ID", "Severity", "Reason", "Payload"]
         )
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.table.setAlternatingRowColors(True)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setMinimumHeight(220)
-        layout.addWidget(self.table, 1)
+        self.alert_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.alert_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.alert_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.alert_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.alert_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+        self.alert_table.setAlternatingRowColors(True)
+        self.alert_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        alert_layout.addWidget(self.alert_table)
+        self.tabs.addTab(alert_tab, "Alert History")
 
-        # Alert section
-        alert_heading = QLabel("INTRUSION ALERTS")
-        alert_heading.setObjectName("sectionHeading")
-        layout.addWidget(alert_heading)
-
-        self.alert_box = QTextEdit()
-        self.alert_box.setReadOnly(True)
-        self.alert_box.setPlaceholderText(
-            "Suspicious message alerts will appear here..."
+        self.demo_note = QLabel(
+            "Demo only: generated CAN traffic is simulated. Suspicious status is assigned by demonstration logic, "
+            "not by a trained ML model or a real vehicle connection."
         )
-        self.alert_box.setMaximumHeight(100)
-        self.alert_box.document().setMaximumBlockCount(100)
-        layout.addWidget(self.alert_box)
+        self.demo_note.setObjectName("note")
+        self.demo_note.setWordWrap(True)
+        outer.addWidget(self.demo_note)
 
-        # Control buttons
-        buttons = QHBoxLayout()
-        buttons.setSpacing(12)
-
-        self.start_button = QPushButton("Start Monitoring")
-        self.start_button.setObjectName("startButton")
-        self.start_button.clicked.connect(self.start_monitoring)
-
-        self.stop_button = QPushButton("Stop Monitoring")
-        self.stop_button.setObjectName("stopButton")
-        self.stop_button.clicked.connect(self.stop_monitoring)
-        self.stop_button.setEnabled(False)
-
-        self.clear_button = QPushButton("Clear Data")
-        self.clear_button.setObjectName("clearButton")
-        self.clear_button.clicked.connect(self.clear_data)
-
-        buttons.addWidget(self.start_button)
-        buttons.addWidget(self.stop_button)
-        buttons.addWidget(self.clear_button)
-        layout.addLayout(buttons)
-
-        footer = QLabel(
-            "DEMO MODE — Simulated CAN traffic; "
-            "not connected to a real vehicle or ML model."
-        )
-        footer.setObjectName("footer")
-        footer.setAlignment(Qt.AlignCenter)
-        layout.addWidget(footer)
-
-        # Dashboard styling
         self.setStyleSheet("""
-            QMainWindow, QWidget {
-                background-color: #101827;
-                color: #E5E7EB;
-                font-family: "Segoe UI";
-                font-size: 13px;
-            }
-            QLabel#title {
-                color: #60A5FA;
-                font-size: 28px;
-                font-weight: bold;
-            }
-            QLabel#subtitle {
-                color: #9CA3AF;
-                font-size: 12px;
-                padding-bottom: 4px;
-            }
-            QLabel#sectionHeading {
-                color: #93C5FD;
-                font-size: 15px;
-                font-weight: bold;
-                padding-top: 3px;
-            }
-            QLabel#summaryCard {
-                background-color: #1B2638;
-                border: 1px solid #344256;
-                border-radius: 8px;
-                padding: 10px;
-                font-size: 15px;
-                font-weight: bold;
-            }
-            QLabel#stoppedStatus {
-                color: #F87171;
-                font-weight: bold;
-                padding: 6px 10px;
-                background-color: #351F2A;
-                border-radius: 6px;
-            }
-            QLabel#runningStatus {
-                color: #4ADE80;
-                font-weight: bold;
-                padding: 6px 10px;
-                background-color: #15382C;
-                border-radius: 6px;
-            }
-            QLabel#lowThreat {
-                color: #4ADE80;
-                background-color: #15382C;
-                border: 1px solid #28664A;
-                border-radius: 8px;
-                padding: 10px;
-                font-weight: bold;
-            }
-            QLabel#highThreat {
-                color: #F87171;
-                background-color: #351F2A;
-                border: 1px solid #803646;
-                border-radius: 8px;
-                padding: 10px;
-                font-weight: bold;
-            }
-            QLabel#filterSummary {
-                color: #9CA3AF;
-                font-size: 11px;
-            }
-            QLineEdit, QComboBox {
-                background-color: #1B2638;
-                color: #E5E7EB;
-                border: 1px solid #344256;
-                border-radius: 5px;
-                padding: 7px;
-                min-height: 20px;
-            }
-            QTableWidget, QTextEdit {
-                background-color: #1B2638;
-                alternate-background-color: #202D40;
-                color: #E5E7EB;
-                gridline-color: #344256;
-                border: 1px solid #344256;
-                border-radius: 6px;
-                selection-background-color: #1D4ED8;
-                selection-color: white;
-            }
-            QHeaderView::section {
-                background-color: #26364C;
-                color: #FFFFFF;
-                padding: 9px;
-                border: none;
-                font-weight: bold;
-            }
-            QPushButton {
-                color: white;
-                padding: 9px 12px;
-                border: none;
-                border-radius: 6px;
-                font-weight: bold;
-            }
-            QPushButton#startButton {
-                background-color: #15803D;
-            }
-            QPushButton#startButton:hover {
-                background-color: #16A34A;
-            }
-            QPushButton#stopButton {
-                background-color: #B91C1C;
-            }
-            QPushButton#stopButton:hover {
-                background-color: #DC2626;
-            }
-            QPushButton#clearButton {
-                background-color: #334155;
-            }
-            QPushButton#clearButton:hover {
-                background-color: #475569;
-            }
-            QPushButton#exportButton {
-                background-color: #1D4ED8;
-            }
-            QPushButton#exportButton:hover {
-                background-color: #2563EB;
-            }
-            QPushButton:disabled {
-                background-color: #374151;
-                color: #9CA3AF;
-            }
-            QLabel#footer {
-                color: #9CA3AF;
-                font-size: 11px;
-                padding-top: 3px;
-            }
+            QMainWindow, QWidget { background: #101722; color: #e8eef7; font-family: Segoe UI; font-size: 10pt; }
+            QLabel#mainTitle { font-size: 22pt; font-weight: 700; color: #f4f7fb; }
+            QLabel#subtitle, QLabel#note { color: #9fb0c5; }
+            QLabel#statusStopped { color: #ff7777; font-weight: 700; padding: 8px 12px; }
+            QLabel#statusRunning { color: #5ce0a0; font-weight: 700; padding: 8px 12px; }
+            QFrame#summaryCard { background: #192536; border: 1px solid #2b3b51; border-radius: 10px; }
+            QLabel#cardLabel { color: #a8bad0; font-size: 9pt; font-weight: 600; }
+            QLabel#cardValue { color: #ffffff; font-size: 20pt; font-weight: 700; }
+            QPushButton { background: #26364b; color: #f4f7fb; border: 1px solid #3a4e68; border-radius: 6px; padding: 9px 12px; }
+            QPushButton:hover { background: #324761; }
+            QPushButton#primaryButton { background: #1976d2; border-color: #1976d2; }
+            QPushButton#primaryButton:hover { background: #2587e7; }
+            QPushButton#dangerButton { background: #782f3b; border-color: #9a3d4c; }
+            QLineEdit, QComboBox { background: #172333; color: #e8eef7; border: 1px solid #34475e; border-radius: 5px; padding: 7px; }
+            QTableWidget { background: #131d2a; alternate-background-color: #192638; gridline-color: #2a3b50; border: 1px solid #2a3b50; }
+            QHeaderView::section { background: #223249; color: #e8eef7; padding: 8px; border: none; font-weight: 600; }
+            QTabWidget::pane { border: 1px solid #2a3b50; border-radius: 6px; }
+            QTabBar::tab { background: #1a2738; color: #aebdd0; padding: 10px 18px; border-top-left-radius: 5px; border-top-right-radius: 5px; }
+            QTabBar::tab:selected { background: #263c56; color: white; }
         """)
 
-        self.apply_filters()
+    def make_card(self, label_text):
+        card = QFrame()
+        card.setObjectName("summaryCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        label = QLabel(label_text)
+        label.setObjectName("cardLabel")
+        value = QLabel("0")
+        value.setObjectName("cardValue")
+        value.setWordWrap(True)
+        layout.addWidget(label)
+        layout.addWidget(value)
+        return card, value
 
     def start_monitoring(self):
-        if not self.timer.isActive():
-            self.timer.start(500)
-            self.monitoring_status.setText("● RUNNING")
-            self.monitoring_status.setObjectName("runningStatus")
-            self.start_button.setEnabled(False)
-            self.stop_button.setEnabled(True)
-            self.refresh_status_style(self.monitoring_status)
+        if not self.monitoring:
+            self.monitoring = True
+            self.status_label.setText("● RUNNING")
+            self.status_label.setObjectName("statusRunning")
+            self.status_label.style().unpolish(self.status_label)
+            self.status_label.style().polish(self.status_label)
+            self.timer.start(1000)
 
     def stop_monitoring(self):
+        self.monitoring = False
         self.timer.stop()
-        self.monitoring_status.setText("● STOPPED")
-        self.monitoring_status.setObjectName("stoppedStatus")
-        self.start_button.setEnabled(True)
-        self.stop_button.setEnabled(False)
-        self.refresh_status_style(self.monitoring_status)
+        self.status_label.setText("● STOPPED")
+        self.status_label.setObjectName("statusStopped")
+        self.status_label.style().unpolish(self.status_label)
+        self.status_label.style().polish(self.status_label)
 
-    @staticmethod
-    def refresh_status_style(widget):
-        widget.style().unpolish(widget)
-        widget.style().polish(widget)
-        widget.update()
-
-    def generate_message(self):
+    def generate_can_message(self):
         self.message_count += 1
-
-        normal_ids = ["0x100", "0x120", "0x200", "0x310"]
-        can_id = random.choice(normal_ids)
-
-        payload = " ".join(
-            f"{random.randint(0, 255):02X}"
-            for _ in range(8)
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        is_suspicious = (self.message_count % 7 == 0)
+        can_id = "0x666" if is_suspicious else random.choice(
+            ["0x100", "0x101", "0x120", "0x200", "0x321", "0x450"]
         )
-        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-
-        # DEMO RULE ONLY: every seventh message is marked suspicious.
-        suspicious = self.message_count % 7 == 0
-
-        if suspicious:
-            can_id = "0x666"
-            status = "SUSPICIOUS"
-            self.alert_count += 1
-            self.alert_box.append(
-                f"[{timestamp}] HIGH | DEMO ALERT | CAN ID: {can_id} | "
-                f"Payload: {payload} | Reason: demonstration rule "
-                "(every seventh message)."
-            )
-            self.threat_label.setText("Threat Level\nHIGH")
-            self.threat_label.setObjectName("highThreat")
-            self.refresh_status_style(self.threat_label)
-        else:
-            status = "NORMAL"
-            self.threat_label.setText("Threat Level\nLOW")
-            self.threat_label.setObjectName("lowThreat")
-            self.refresh_status_style(self.threat_label)
+        payload = " ".join(f"{random.randint(0, 255):02X}" for _ in range(8))
+        status = "SUSPICIOUS" if is_suspicious else "NORMAL"
 
         record = {
             "timestamp": timestamp,
@@ -385,135 +236,162 @@ class CanSentinelDashboard(QMainWindow):
         }
         self.traffic_records.append(record)
 
-        self.apply_filters()
-        self.total_label.setText(f"Total Messages\n{self.message_count}")
-        self.alert_label.setText(f"Intrusion Alerts\n{self.alert_count}")
+        if is_suspicious:
+            self.create_alert(record)
 
-    def apply_filters(self, *_):
-        """Display records matching both the CAN ID and status filters."""
-        can_id_query = self.can_id_filter.text().strip().casefold()
-        selected_status = self.status_filter.currentText()
+        self.apply_traffic_filters()
+        self.update_summary()
 
-        matching_records = [
-            record for record in self.traffic_records
-            if can_id_query in record["can_id"].casefold()
-            and (
-                selected_status == "All"
-                or record["status"] == selected_status
-            )
+    def create_alert(self, traffic_record):
+        # Severity and reason are demo rules, not a validated security classifier.
+        alert = {
+            "timestamp": traffic_record["timestamp"],
+            "can_id": traffic_record["can_id"],
+            "severity": "HIGH",
+            "reason": "Demo rule: message flagged by simulated suspicious-traffic logic",
+            "payload": traffic_record["payload"],
+        }
+        self.alert_history.append(alert)
+        self.refresh_alert_table()
+
+    def apply_traffic_filters(self):
+        can_query = self.can_id_filter.text().strip().lower()
+        status_query = self.status_filter.currentText()
+        filtered = [
+            r for r in self.traffic_records
+            if can_query in r["can_id"].lower()
+            and (status_query == "All" or r["status"] == status_query)
         ]
-
-        # Keep the interface responsive by showing at most 200 matching rows.
-        visible_records = matching_records[-200:]
-        self.table.setRowCount(0)
-
-        for record in visible_records:
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-            values = [
-                record["timestamp"],
-                record["can_id"],
-                record["payload"],
-                record["status"],
-            ]
-
-            for column, value in enumerate(values):
-                item = QTableWidgetItem(value)
-                item.setTextAlignment(Qt.AlignCenter)
-                if record["status"] == "SUSPICIOUS":
+        visible = filtered[-200:]
+        self.traffic_table.setRowCount(0)
+        for record in visible:
+            row = self.traffic_table.rowCount()
+            self.traffic_table.insertRow(row)
+            values = [record["timestamp"], record["can_id"], record["payload"], record["status"]]
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                if col == 3 and value == "SUSPICIOUS":
                     item.setForeground(Qt.red)
-                self.table.setItem(row, column, item)
+                self.traffic_table.setItem(row, col, item)
 
-        self.table.scrollToBottom()
-        self.filter_summary.setText(
-            f"Showing {len(visible_records)} of "
-            f"{len(matching_records)} matching records "
-            f"({len(self.traffic_records)} total retained)"
-        )
-
-    def export_traffic_csv(self):
-        """Export records matching the current filters to a CSV file."""
-        can_id_query = self.can_id_filter.text().strip().casefold()
-        selected_status = self.status_filter.currentText()
-
-        matching_records = [
-            record for record in self.traffic_records
-            if can_id_query in record["can_id"].casefold()
-            and (
-                selected_status == "All"
-                or record["status"] == selected_status
-            )
+    def refresh_alert_table(self):
+        severity_query = self.severity_filter.currentText()
+        reason_query = self.reason_filter.text().strip().lower()
+        filtered = [
+            a for a in self.alert_history
+            if (severity_query == "All" or a["severity"] == severity_query)
+            and reason_query in a["reason"].lower()
         ]
+        self.alert_table.setRowCount(0)
+        for alert in filtered:
+            row = self.alert_table.rowCount()
+            self.alert_table.insertRow(row)
+            values = [alert["timestamp"], alert["can_id"], alert["severity"], alert["reason"], alert["payload"]]
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                if col == 2:
+                    item.setForeground(Qt.red if value in ("HIGH", "CRITICAL") else Qt.yellow)
+                self.alert_table.setItem(row, col, item)
 
-        if not matching_records:
-            QMessageBox.information(
-                self,
-                "No traffic to export",
-                "No traffic records match the current filters.",
-            )
+    def export_filtered_traffic(self):
+        can_query = self.can_id_filter.text().strip().lower()
+        status_query = self.status_filter.currentText()
+        filtered = [
+            r for r in self.traffic_records
+            if can_query in r["can_id"].lower()
+            and (status_query == "All" or r["status"] == status_query)
+        ]
+        if not filtered:
+            QMessageBox.information(self, "No traffic", "There are no traffic records matching the current filters.")
             return
-
-        default_name = (
-            "can_traffic_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".csv"
-        )
-        file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Export CAN Traffic",
-            default_name,
-            "CSV Files (*.csv)",
-        )
-
-        if not file_path:
+        path, _ = QFileDialog.getSaveFileName(self, "Export Filtered Traffic", "can_traffic.csv", "CSV Files (*.csv)")
+        if not path:
             return
-
-        if not file_path.lower().endswith(".csv"):
-            file_path += ".csv"
-
+        if not path.lower().endswith(".csv"):
+            path += ".csv"
         try:
-            with open(file_path, "w", newline="", encoding="utf-8-sig") as csv_file:
-                writer = csv.writer(csv_file)
+            with open(path, "w", newline="", encoding="utf-8-sig") as file:
+                writer = csv.writer(file)
                 writer.writerow(["Timestamp", "CAN ID", "Payload", "Status"])
-                for record in matching_records:
-                    writer.writerow([
-                        record["timestamp"],
-                        record["can_id"],
-                        record["payload"],
-                        record["status"],
-                    ])
+                for r in filtered:
+                    writer.writerow([r["timestamp"], r["can_id"], r["payload"], r["status"]])
+            QMessageBox.information(self, "Export successful", f"Exported {len(filtered)} traffic records.")
+        except OSError as exc:
+            QMessageBox.critical(self, "Export failed", f"Could not write CSV file:\n{exc}")
 
-            QMessageBox.information(
-                self,
-                "Export successful",
-                f"Exported {len(matching_records)} record(s) to:\n{file_path}",
-            )
-        except OSError as error:
-            QMessageBox.critical(
-                self,
-                "Export failed",
-                f"Could not save the CSV file:\n{error}",
-            )
+    def export_alert_history(self):
+        if not self.alert_history:
+            QMessageBox.information(self, "No alerts", "No alert history is available to export.")
+            return
+        severity_query = self.severity_filter.currentText()
+        reason_query = self.reason_filter.text().strip().lower()
+        filtered = [
+            a for a in self.alert_history
+            if (severity_query == "All" or a["severity"] == severity_query)
+            and reason_query in a["reason"].lower()
+        ]
+        if not filtered:
+            QMessageBox.information(self, "No matching alerts", "No alert records match the current alert filters.")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Export Alert History", "can_alert_history.csv", "CSV Files (*.csv)")
+        if not path:
+            return
+        if not path.lower().endswith(".csv"):
+            path += ".csv"
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as file:
+                writer = csv.writer(file)
+                writer.writerow(["Timestamp", "CAN ID", "Severity", "Reason", "Payload"])
+                for a in filtered:
+                    writer.writerow([a["timestamp"], a["can_id"], a["severity"], a["reason"], a["payload"]])
+            QMessageBox.information(self, "Export successful", f"Exported {len(filtered)} alert records.")
+        except OSError as exc:
+            QMessageBox.critical(self, "Export failed", f"Could not write CSV file:\n{exc}")
 
-    def clear_data(self):
-        self.table.setRowCount(0)
-        self.alert_box.clear()
+    def clear_traffic_display(self):
+        # Intentionally clears only the table, not stored records/history.
+        self.traffic_table.setRowCount(0)
+        QMessageBox.information(
+            self, "Display cleared",
+            "The visible traffic table was cleared. Stored traffic and alert history are preserved for CSV export."
+        )
+
+    def clear_all_session_data(self):
+        answer = QMessageBox.question(
+            self, "Clear all session data",
+            "This permanently removes traffic and alert history from this running session. Continue?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if answer != QMessageBox.Yes:
+            return
         self.traffic_records.clear()
-
+        self.alert_history.clear()
         self.message_count = 0
         self.alert_count = 0
-
-        self.total_label.setText("Total Messages\n0")
-        self.alert_label.setText("Intrusion Alerts\n0")
-        self.threat_label.setText("Threat Level\nLOW")
-        self.threat_label.setObjectName("lowThreat")
-        self.refresh_status_style(self.threat_label)
-
+        self.traffic_table.setRowCount(0)
+        self.alert_table.setRowCount(0)
         self.can_id_filter.clear()
         self.status_filter.setCurrentText("All")
-        self.apply_filters()
+        self.severity_filter.setCurrentText("All")
+        self.reason_filter.clear()
+        self.update_summary()
+
+    def update_summary(self):
+        total = len(self.traffic_records)
+        alerts = len(self.alert_history)
+        self.total_value.setText(str(total))
+        self.alert_value.setText(str(alerts))
+        self.normal_value.setText(str(sum(1 for r in self.traffic_records if r["status"] == "NORMAL")))
+        self.threat_value.setText(self.alert_history[-1]["severity"] if self.alert_history else "None")
+        self.alert_count = alerts
 
 
-if __name__ == "__main__":
+def main():
     app = QApplication(sys.argv)
     window = CanSentinelDashboard()
     window.show()
     sys.exit(app.exec_())
+
+
+if __name__ == "__main__":
+    main()
