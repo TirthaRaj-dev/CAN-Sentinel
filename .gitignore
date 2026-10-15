@@ -1,7 +1,26 @@
-.venv/
-venv/
+# Python bytecode and caches
 __pycache__/
 *.py[cod]
-.env
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Test / coverage output
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE and local environment files
 .vscode/
 .idea/
+.env
+.env.*
+!.env.example
+
+# OS-generated files
+.DS_Store
+Thumbs.db
