@@ -326,7 +326,7 @@ class CanSentinelDashboard(QMainWindow):
                     item.setForeground(Qt.red)
                 self.traffic_table.setItem(row, col, item)
     def refresh_alert_table(self):
-        filtered = self.get_filtered_alert_records()
+        filtered = self.get_filtered_alert_records()[-200:]
         self.alert_table.setRowCount(0)
         for alert in filtered:
             row = self.alert_table.rowCount()
