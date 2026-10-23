@@ -3,12 +3,20 @@ import csv
 import random
 from datetime import datetime
 from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QTableWidget, QTableWidgetItem, QLineEdit,
     QComboBox, QFileDialog, QMessageBox, QFrame, QHeaderView, QTabWidget
 )
 class CanSentinelDashboard(QMainWindow):
+    # Display colors are visual aids for simulated demo severity levels.
+    SEVERITY_COLORS = {
+        "LOW": ("#5ce0a0", "#173b32"),
+        "MEDIUM": ("#f4d35e", "#443b1b"),
+        "HIGH": ("#ff9f43", "#492d1c"),
+        "CRITICAL": ("#ff6b6b", "#4a2028"),
+    }
     TRAFFIC_COLUMNS = ["Timestamp", "CAN ID", "Payload", "Status"]
     ALERT_COLUMNS = ["Timestamp", "CAN ID", "Severity", "Reason", "Payload"]
     @staticmethod
@@ -267,12 +275,21 @@ class CanSentinelDashboard(QMainWindow):
         self.apply_traffic_filters()
         self.update_summary()
     def create_alert(self, traffic_record):
-        # Severity and reason are demo rules, not a validated security classifier.
+        # Cycle through levels so the UI can demonstrate all severity indicators.
+        # This is illustrative logic, not a validated security classifier.
+        severity_levels = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+        severity = severity_levels[len(self.alert_history) % len(severity_levels)]
+        reason_by_severity = {
+            "LOW": "Demo rule: unusual message flagged for review",
+            "MEDIUM": "Demo rule: repeated suspicious-traffic pattern",
+            "HIGH": "Demo rule: suspicious CAN ID and payload pattern",
+            "CRITICAL": "Demo rule: simulated critical intrusion event",
+        }
         alert = {
             "timestamp": traffic_record["timestamp"],
             "can_id": traffic_record["can_id"],
-            "severity": "HIGH",
-            "reason": "Demo rule: message flagged by simulated suspicious-traffic logic",
+            "severity": severity,
+            "reason": reason_by_severity[severity],
             "payload": traffic_record["payload"],
         }
         self.alert_history.append(alert)
@@ -318,7 +335,14 @@ class CanSentinelDashboard(QMainWindow):
             for col, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
                 if col == 2:
-                    item.setForeground(Qt.red if value in ("HIGH", "CRITICAL") else Qt.yellow)
+                    foreground, background = self.SEVERITY_COLORS.get(
+                        value, ("#e8eef7", "#26364b")
+                    )
+                    item.setForeground(QColor(foreground))
+                    item.setBackground(QColor(background))
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
                 self.alert_table.setItem(row, col, item)
     def _write_csv_file(self, path, headers, rows):
         """Write CSV rows safely and show a consistent success/error message."""
@@ -392,7 +416,13 @@ class CanSentinelDashboard(QMainWindow):
         self.total_value.setText(str(total))
         self.alert_value.setText(str(alerts))
         self.normal_value.setText(str(sum(1 for r in self.traffic_records if r["status"] == "NORMAL")))
-        self.threat_value.setText(self.alert_history[-1]["severity"] if self.alert_history else "None")
+        latest_severity = self.alert_history[-1]["severity"] if self.alert_history else "None"
+        self.threat_value.setText(latest_severity)
+        if latest_severity in self.SEVERITY_COLORS:
+            foreground, _ = self.SEVERITY_COLORS[latest_severity]
+            self.threat_value.setStyleSheet(f"color: {foreground}; font-weight: 700;")
+        else:
+            self.threat_value.setStyleSheet("color: #ffffff; font-weight: 700;")
         self.alert_count = alerts
 def main():
     app = QApplication(sys.argv)
