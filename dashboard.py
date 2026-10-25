@@ -351,15 +351,20 @@ class CanSentinelDashboard(QMainWindow):
                     item.setFont(font)
                 self.alert_table.setItem(row, col, item)
     def _write_csv_file(self, path, headers, rows):
-        """Write CSV rows safely and show a consistent success/error message."""
+        """Write CSV rows and report exactly how many records were exported."""
         path = self._append_csv_extension(path)
         try:
-            self._write_csv(path, headers, rows)
+            exported_count = self._write_csv(path, headers, rows)
         except (OSError, csv.Error, UnicodeError) as exc:
             QMessageBox.critical(self, "Export failed", f"Could not write CSV file:\n{exc}")
-            return False
-        QMessageBox.information(self, "Export successful", f"CSV exported successfully: {path}")
-        return True
+            return None
+
+        QMessageBox.information(
+            self,
+            "Export successful",
+            f"Exported {exported_count} record(s) to CSV successfully:\n{path}",
+        )
+        return exported_count
     def export_filtered_traffic(self):
         filtered = self.get_filtered_traffic_records()
         if not filtered:
