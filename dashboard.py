@@ -166,6 +166,12 @@ class CanSentinelDashboard(QMainWindow):
         self.export_alerts_button.setObjectName("primaryButton")
         self.export_alerts_button.clicked.connect(self.export_alert_history)
         alert_controls.addWidget(self.export_alerts_button)
+        self.clear_alert_display_button = QPushButton("Clear Alert Display")
+        self.clear_alert_display_button.setToolTip(
+            "Clears visible alert rows only. Stored alert history and CSV export data are preserved."
+        )
+        self.clear_alert_display_button.clicked.connect(self.clear_alert_display)
+        alert_controls.addWidget(self.clear_alert_display_button)
         alert_layout.addLayout(alert_controls)
         self.alert_table = QTableWidget(0, 5)
         self.alert_table.setHorizontalHeaderLabels(
@@ -326,7 +332,7 @@ class CanSentinelDashboard(QMainWindow):
                     item.setForeground(Qt.red)
                 self.traffic_table.setItem(row, col, item)
     def refresh_alert_table(self):
-        filtered = self.get_filtered_alert_records()[-200:]
+        filtered = self.get_filtered_alert_records()
         self.alert_table.setRowCount(0)
         for alert in filtered:
             row = self.alert_table.rowCount()
@@ -390,6 +396,14 @@ class CanSentinelDashboard(QMainWindow):
         QMessageBox.information(
             self, "Display cleared",
             "The visible traffic table was cleared. Stored traffic and alert history are preserved for CSV export."
+        )
+    def clear_alert_display(self):
+        """Clear visible alert rows without deleting stored alert history."""
+        self.alert_table.setRowCount(0)
+        QMessageBox.information(
+            self,
+            "Alert display cleared",
+            "The visible alert table was cleared. Stored alert history and CSV export data are preserved.",
         )
     def clear_all_session_data(self):
         answer = QMessageBox.question(
