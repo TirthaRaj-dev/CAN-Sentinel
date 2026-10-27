@@ -1,4 +1,5 @@
 import csv
+import os
 import random
 import sys
 from datetime import datetime
@@ -6,6 +7,9 @@ from datetime import datetime
 from PyQt5.QtCore import QTimer, Qt
 
 from integration.adapter import normalize_traffic_message, normalize_detection_result
+from integration.sniffer_client import (
+    JsonlFileSnifferClient, SnifferClientError, TcpJsonlSnifferClient,
+)
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QApplication,
@@ -50,6 +54,9 @@ class CanSentinelDashboard(QMainWindow):
         self.message_count = 0
         self.alert_count = 0
         self.monitoring = False
+        self.sniffer_client = None
+        self.input_mode = os.environ.get("CAN_SENTINEL_SOURCE", "demo").strip().lower()
+        self.integration_error_count = 0
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.generate_can_message)
@@ -298,23 +305,88 @@ class CanSentinelDashboard(QMainWindow):
         return card, value
 
     def start_monitoring(self):
-        if not self.monitoring:
-            self.monitoring = True
-            self.status_label.setText("● RUNNING")
-            self.status_label.setObjectName("statusRunning")
-            self.status_label.style().unpolish(self.status_label)
-            self.status_label.style().polish(self.status_label)
-            self.timer.start(1000)
+        if self.monitoring:
+            return
+        self.input_mode = os.environ.get("CAN_SENTINEL_SOURCE", "demo").strip().lower()
+        if self.input_mode in {"file", "tcp"}:
+            try:
+                if self.input_mode == "file":
+                    path = os.environ.get("CAN_SENTINEL_SNIFFER_FILE", "").strip()
+                    if not path:
+                        raise SnifferClientError(
+                            "Set CAN_SENTINEL_SNIFFER_FILE to the sniffer's JSONL output path."
+                        )
+                    from_start = os.environ.get("CAN_SENTINEL_SNIFFER_FROM_START", "0").strip() == "1"
+                    self.sniffer_client = JsonlFileSnifferClient(path, start_at_end=not from_start)
+                else:
+                    host = os.environ.get("CAN_SENTINEL_SNIFFER_HOST", "127.0.0.1")
+                    port = int(os.environ.get("CAN_SENTINEL_SNIFFER_PORT", "8765"))
+                    self.sniffer_client = TcpJsonlSnifferClient(host, port)
+            except (SnifferClientError, ValueError) as exc:
+                self.status_label.setToolTip(str(exc))
+                QMessageBox.warning(self, "Sniffer connection failed", str(exc))
+                return
+        elif self.input_mode != "demo":
+            QMessageBox.warning(
+                self, "Unknown input source",
+                "CAN_SENTINEL_SOURCE must be demo, file, or tcp."
+            )
+            return
+
+        self.monitoring = True
+        mode_label = {"demo": "DEMO", "file": "LIVE FILE", "tcp": "LIVE TCP"}.get(
+            self.input_mode, self.input_mode.upper()
+        )
+        self.status_label.setText(f"● RUNNING · {mode_label}")
+        self.status_label.setObjectName("statusRunning")
+        self.status_label.style().unpolish(self.status_label)
+        self.status_label.style().polish(self.status_label)
+        self.status_label.setToolTip("Input source: " + mode_label)
+        self.timer.start(1000 if self.input_mode == "demo" else 100)
 
     def stop_monitoring(self):
         self.monitoring = False
         self.timer.stop()
+        if self.sniffer_client is not None:
+            self.sniffer_client.close()
+            self.sniffer_client = None
         self.status_label.setText("● STOPPED")
         self.status_label.setObjectName("statusStopped")
         self.status_label.style().unpolish(self.status_label)
         self.status_label.style().polish(self.status_label)
 
     def generate_can_message(self):
+        """Timer callback: generate demo traffic or poll the configured live source."""
+        if self.input_mode in {"file", "tcp"}:
+            self.poll_sniffer_messages()
+            return
+        self.generate_demo_message()
+
+    def poll_sniffer_messages(self):
+        """Poll available live records without blocking the Qt GUI event loop."""
+        if self.sniffer_client is None:
+            return
+        for record in self.sniffer_client.poll(max_messages=100):
+            # Client already normalized each record; keep the shared boundary explicit.
+            try:
+                normalized = normalize_traffic_message(record)
+            except (TypeError, ValueError) as exc:
+                self.integration_error_count += 1
+                self.status_label.setToolTip(f"Skipped invalid sniffer message: {exc}")
+                continue
+            self.traffic_records.append(normalized)
+            self.message_count += 1
+        errors = getattr(self.sniffer_client, "errors", [])
+        if errors:
+            self.integration_error_count += len(errors)
+            self.status_label.setToolTip(
+                f"Skipped/received {len(errors)} input issue(s). Latest: {errors[-1]}"
+            )
+        if self.sniffer_client is not None:
+            self.apply_traffic_filters()
+            self.update_summary()
+
+    def generate_demo_message(self):
         """Generate sample CAN traffic for dashboard demonstration only."""
         self.message_count += 1
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
