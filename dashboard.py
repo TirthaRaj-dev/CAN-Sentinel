@@ -4,6 +4,8 @@ import sys
 from datetime import datetime
 
 from PyQt5.QtCore import QTimer, Qt
+
+from integration.adapter import normalize_traffic_message, normalize_detection_result
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QApplication,
@@ -338,12 +340,13 @@ class CanSentinelDashboard(QMainWindow):
             payload = random.choice(normal_profiles[can_id])
             status = "NORMAL"
 
-        record = {
+        # Route demo input through the same schema adapter planned for live traffic.
+        record = normalize_traffic_message({
             "timestamp": timestamp,
             "can_id": can_id,
             "payload": payload,
             "status": status,
-        }
+        })
         self.traffic_records.append(record)
 
         if is_suspicious:
@@ -362,13 +365,15 @@ class CanSentinelDashboard(QMainWindow):
             "HIGH": "Demo rule: suspicious CAN ID and payload pattern",
             "CRITICAL": "Demo rule: simulated critical intrusion event",
         }
-        self.alert_history.append({
+        # Demo alert follows the same detection-result contract as Member 3 output.
+        alert = normalize_detection_result({
             "timestamp": traffic_record["timestamp"],
             "can_id": traffic_record["can_id"],
             "severity": severity,
             "reason": reason_by_severity[severity],
             "payload": traffic_record["payload"],
         })
+        self.alert_history.append(alert)
         self.refresh_alert_table()
 
     def get_filtered_traffic_records(self):
