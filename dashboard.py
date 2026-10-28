@@ -10,6 +10,9 @@ from integration.adapter import normalize_traffic_message, normalize_detection_r
 from integration.sniffer_client import (
     JsonlFileSnifferClient, SnifferClientError, TcpJsonlSnifferClient,
 )
+from integration.detection_client import (
+    DetectionClientError, JsonlFileDetectionClient, TcpJsonlDetectionClient,
+)
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QApplication,
@@ -42,7 +45,7 @@ class CanSentinelDashboard(QMainWindow):
         "CRITICAL": ("#ff6b6b", "#4a2028"),
     }
     TRAFFIC_COLUMNS = ["Timestamp", "CAN ID", "Payload", "Status"]
-    ALERT_COLUMNS = ["Timestamp", "CAN ID", "Severity", "Reason", "Payload"]
+    ALERT_COLUMNS = ["Detection Timestamp", "CAN ID", "Severity", "Reason", "Payload", "Traffic Match"]
 
     def __init__(self):
         super().__init__()
@@ -55,6 +58,8 @@ class CanSentinelDashboard(QMainWindow):
         self.alert_count = 0
         self.monitoring = False
         self.sniffer_client = None
+        self.detection_client = None
+        self.detection_mode = os.environ.get("CAN_SENTINEL_DETECTION_SOURCE", "off").strip().lower()
         self.input_mode = os.environ.get("CAN_SENTINEL_SOURCE", "demo").strip().lower()
         self.integration_error_count = 0
 
@@ -342,7 +347,41 @@ class CanSentinelDashboard(QMainWindow):
         self.status_label.style().unpolish(self.status_label)
         self.status_label.style().polish(self.status_label)
         self.status_label.setToolTip("Input source: " + mode_label)
+        try:
+            self.start_detection_client()
+        except (DetectionClientError, ValueError) as exc:
+            if self.sniffer_client is not None:
+                self.sniffer_client.close()
+                self.sniffer_client = None
+            self.monitoring = False
+            self.timer.stop()
+            self.status_label.setText("● STOPPED")
+            self.status_label.setToolTip(str(exc))
+            QMessageBox.warning(self, "Detection connection failed", str(exc))
+            return
         self.timer.start(1000 if self.input_mode == "demo" else 100)
+
+    def start_detection_client(self):
+        """Configure Member 3's independent detection-results source."""
+        self.detection_mode = os.environ.get("CAN_SENTINEL_DETECTION_SOURCE", "off").strip().lower()
+        if self.detection_mode == "off" or self.detection_mode == "demo":
+            self.detection_client = None
+        elif self.detection_mode == "file":
+            path = os.environ.get("CAN_SENTINEL_DETECTION_FILE", "").strip()
+            if not path:
+                raise DetectionClientError(
+                    "Set CAN_SENTINEL_DETECTION_FILE to the detector's JSONL output path."
+                )
+            from_start = os.environ.get("CAN_SENTINEL_DETECTION_FROM_START", "0").strip() == "1"
+            self.detection_client = JsonlFileDetectionClient(path, start_at_end=not from_start)
+        elif self.detection_mode == "tcp":
+            host = os.environ.get("CAN_SENTINEL_DETECTION_HOST", "127.0.0.1")
+            port = int(os.environ.get("CAN_SENTINEL_DETECTION_PORT", "8766"))
+            self.detection_client = TcpJsonlDetectionClient(host, port)
+        else:
+            raise DetectionClientError(
+                "CAN_SENTINEL_DETECTION_SOURCE must be off, demo, file, or tcp."
+            )
 
     def stop_monitoring(self):
         self.monitoring = False
@@ -350,6 +389,9 @@ class CanSentinelDashboard(QMainWindow):
         if self.sniffer_client is not None:
             self.sniffer_client.close()
             self.sniffer_client = None
+        if self.detection_client is not None:
+            self.detection_client.close()
+            self.detection_client = None
         self.status_label.setText("● STOPPED")
         self.status_label.setObjectName("statusStopped")
         self.status_label.style().unpolish(self.status_label)
@@ -361,6 +403,9 @@ class CanSentinelDashboard(QMainWindow):
             self.poll_sniffer_messages()
             return
         self.generate_demo_message()
+        self.poll_detection_results()
+        self.apply_traffic_filters()
+        self.update_summary()
 
     def poll_sniffer_messages(self):
         """Poll available live records without blocking the Qt GUI event loop."""
@@ -382,9 +427,46 @@ class CanSentinelDashboard(QMainWindow):
             self.status_label.setToolTip(
                 f"Skipped/received {len(errors)} input issue(s). Latest: {errors[-1]}"
             )
-        if self.sniffer_client is not None:
-            self.apply_traffic_filters()
-            self.update_summary()
+        self.poll_detection_results()
+        self.apply_traffic_filters()
+        self.update_summary()
+
+    def poll_detection_results(self):
+        """Consume detector alerts, mark matching traffic, and retain alert history."""
+        if self.detection_client is None:
+            return
+        for result in self.detection_client.poll(max_messages=100):
+            try:
+                alert = normalize_detection_result(result)
+            except (TypeError, ValueError) as exc:
+                self.integration_error_count += 1
+                self.status_label.setToolTip(f"Skipped invalid detection result: {exc}")
+                continue
+            matched = self.match_detection_to_traffic(alert)
+            alert["traffic_match"] = matched.get("timestamp", "No matching traffic") if matched else "No matching traffic"
+            if matched:
+                matched["status"] = "SUSPICIOUS"
+                if "payload" not in alert or not alert["payload"]:
+                    alert["payload"] = matched["payload"]
+            else:
+                alert.setdefault("payload", "")
+            self.alert_history.append(alert)
+        errors = getattr(self.detection_client, "errors", [])
+        if errors:
+            self.integration_error_count += len(errors)
+            self.status_label.setToolTip(
+                f"Skipped/received {len(errors)} detection issue(s). Latest: {errors[-1]}"
+            )
+        self.refresh_alert_table()
+
+    def match_detection_to_traffic(self, alert):
+        """Match CAN ID and optional payload, preferring the most recent traffic row."""
+        candidates = [r for r in reversed(self.traffic_records) if r["can_id"].upper() == alert["can_id"].upper()]
+        if alert.get("payload"):
+            payload_matches = [r for r in candidates if r.get("payload", "").upper() == alert["payload"].upper()]
+            if payload_matches:
+                return payload_matches[0]
+        return candidates[0] if candidates else None
 
     def generate_demo_message(self):
         """Generate sample CAN traffic for dashboard demonstration only."""
@@ -421,7 +503,7 @@ class CanSentinelDashboard(QMainWindow):
         })
         self.traffic_records.append(record)
 
-        if is_suspicious:
+        if is_suspicious and self.detection_mode not in {"file", "tcp"}:
             self.create_alert(record)
 
         self.apply_traffic_filters()
@@ -445,6 +527,7 @@ class CanSentinelDashboard(QMainWindow):
             "reason": reason_by_severity[severity],
             "payload": traffic_record["payload"],
         })
+        alert["traffic_match"] = traffic_record["timestamp"]
         self.alert_history.append(alert)
         self.refresh_alert_table()
 
@@ -490,7 +573,8 @@ class CanSentinelDashboard(QMainWindow):
             self.alert_table.insertRow(row)
             values = [
                 alert["timestamp"], alert["can_id"], alert["severity"],
-                alert["reason"], alert["payload"]
+                alert["reason"], alert.get("payload", ""),
+                alert.get("traffic_match", "Not recorded")
             ]
             for column, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
@@ -540,7 +624,8 @@ class CanSentinelDashboard(QMainWindow):
         if path:
             rows = (
                 [alert["timestamp"], alert["can_id"], alert["severity"],
-                 alert["reason"], alert["payload"]]
+                 alert["reason"], alert.get("payload", ""),
+                 alert.get("traffic_match", "Not recorded")]
                 for alert in filtered
             )
             self._write_csv_file(path, self.ALERT_COLUMNS, rows)
