@@ -10,9 +10,8 @@ from integration.adapter import normalize_traffic_message, normalize_detection_r
 from integration.sniffer_client import (
     JsonlFileSnifferClient, SnifferClientError, TcpJsonlSnifferClient,
 )
-from integration.detection_client import (
-    DetectionClientError, JsonlFileDetectionClient, TcpJsonlDetectionClient,
-)
+from integration.detection_client import DetectionClientError
+from integration.workers import MonitoringWorker
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QApplication,
@@ -46,6 +45,8 @@ class CanSentinelDashboard(QMainWindow):
     }
     TRAFFIC_COLUMNS = ["Timestamp", "CAN ID", "Payload", "Status"]
     ALERT_COLUMNS = ["Detection Timestamp", "CAN ID", "Severity", "Reason", "Payload", "Traffic Match"]
+    MAX_VISIBLE_TRAFFIC_ROWS = 200
+    MAX_VISIBLE_ALERT_ROWS = 200
 
     def __init__(self):
         super().__init__()
@@ -59,6 +60,8 @@ class CanSentinelDashboard(QMainWindow):
         self.monitoring = False
         self.sniffer_client = None
         self.detection_client = None
+        self.monitoring_worker = None
+        self._seen_detection_keys = set()
         self.detection_mode = os.environ.get("CAN_SENTINEL_DETECTION_SOURCE", "off").strip().lower()
         self.input_mode = os.environ.get("CAN_SENTINEL_SOURCE", "demo").strip().lower()
         self.integration_error_count = 0
@@ -310,109 +313,37 @@ class CanSentinelDashboard(QMainWindow):
         return card, value
 
     def start_monitoring(self):
+        """Start demo timer or move live sniffer/detector reads into a QThread."""
         if self.monitoring:
             return
         self.input_mode = os.environ.get("CAN_SENTINEL_SOURCE", "demo").strip().lower()
-        if self.input_mode in {"file", "tcp"}:
-            try:
-                if self.input_mode == "file":
-                    path = os.environ.get("CAN_SENTINEL_SNIFFER_FILE", "").strip()
-                    if not path:
-                        raise SnifferClientError(
-                            "Set CAN_SENTINEL_SNIFFER_FILE to the sniffer's JSONL output path."
-                        )
-                    from_start = os.environ.get("CAN_SENTINEL_SNIFFER_FROM_START", "0").strip() == "1"
-                    self.sniffer_client = JsonlFileSnifferClient(path, start_at_end=not from_start)
-                else:
-                    host = os.environ.get("CAN_SENTINEL_SNIFFER_HOST", "127.0.0.1")
-                    port = int(os.environ.get("CAN_SENTINEL_SNIFFER_PORT", "8765"))
-                    self.sniffer_client = TcpJsonlSnifferClient(host, port)
-            except (SnifferClientError, ValueError) as exc:
-                self.status_label.setToolTip(str(exc))
-                QMessageBox.warning(self, "Sniffer connection failed", str(exc))
-                return
-        elif self.input_mode != "demo":
-            QMessageBox.warning(
-                self, "Unknown input source",
-                "CAN_SENTINEL_SOURCE must be demo, file, or tcp."
-            )
-            return
-
-        self.monitoring = True
-        mode_label = {"demo": "DEMO", "file": "LIVE FILE", "tcp": "LIVE TCP"}.get(
-            self.input_mode, self.input_mode.upper()
-        )
-        self.status_label.setText(f"● RUNNING · {mode_label}")
-        self.status_label.setObjectName("statusRunning")
-        self.status_label.style().unpolish(self.status_label)
-        self.status_label.style().polish(self.status_label)
-        self.status_label.setToolTip("Input source: " + mode_label)
-        try:
-            self.start_detection_client()
-        except (DetectionClientError, ValueError) as exc:
-            if self.sniffer_client is not None:
-                self.sniffer_client.close()
-                self.sniffer_client = None
-            self.monitoring = False
-            self.timer.stop()
-            self.status_label.setText("● STOPPED")
-            self.status_label.setToolTip(str(exc))
-            QMessageBox.warning(self, "Detection connection failed", str(exc))
-            return
-        self.timer.start(1000 if self.input_mode == "demo" else 100)
-
-    def start_detection_client(self):
-        """Configure Member 3's independent detection-results source."""
         self.detection_mode = os.environ.get("CAN_SENTINEL_DETECTION_SOURCE", "off").strip().lower()
-        if self.detection_mode == "off" or self.detection_mode == "demo":
-            self.detection_client = None
-        elif self.detection_mode == "file":
-            path = os.environ.get("CAN_SENTINEL_DETECTION_FILE", "").strip()
-            if not path:
-                raise DetectionClientError(
-                    "Set CAN_SENTINEL_DETECTION_FILE to the detector's JSONL output path."
-                )
-            from_start = os.environ.get("CAN_SENTINEL_DETECTION_FROM_START", "0").strip() == "1"
-            self.detection_client = JsonlFileDetectionClient(path, start_at_end=not from_start)
-        elif self.detection_mode == "tcp":
-            host = os.environ.get("CAN_SENTINEL_DETECTION_HOST", "127.0.0.1")
-            port = int(os.environ.get("CAN_SENTINEL_DETECTION_PORT", "8766"))
-            self.detection_client = TcpJsonlDetectionClient(host, port)
-        else:
-            raise DetectionClientError(
-                "CAN_SENTINEL_DETECTION_SOURCE must be off, demo, file, or tcp."
-            )
-
-    def stop_monitoring(self):
-        self.monitoring = False
-        self.timer.stop()
-        if self.sniffer_client is not None:
-            self.sniffer_client.close()
-            self.sniffer_client = None
-        if self.detection_client is not None:
-            self.detection_client.close()
-            self.detection_client = None
-        self.status_label.setText("● STOPPED")
-        self.status_label.setObjectName("statusStopped")
-        self.status_label.style().unpolish(self.status_label)
-        self.status_label.style().polish(self.status_label)
-
-    def generate_can_message(self):
-        """Timer callback: generate demo traffic or poll the configured live source."""
-        if self.input_mode in {"file", "tcp"}:
-            self.poll_sniffer_messages()
+        if self.input_mode not in {"demo", "file", "tcp"}:
+            QMessageBox.warning(self, "Unknown input source", "CAN_SENTINEL_SOURCE must be demo, file, or tcp.")
             return
-        self.generate_demo_message()
-        self.poll_detection_results()
-        self.apply_traffic_filters()
-        self.update_summary()
-
-    def poll_sniffer_messages(self):
-        """Poll available live records without blocking the Qt GUI event loop."""
-        if self.sniffer_client is None:
+        if self.detection_mode not in {"off", "demo", "file", "tcp"}:
+            QMessageBox.warning(self, "Unknown detection source", "Detection source must be off, demo, file, or tcp.")
             return
-        for record in self.sniffer_client.poll(max_messages=100):
-            # Client already normalized each record; keep the shared boundary explicit.
+        self.monitoring = True
+        mode_label = {"demo": "DEMO", "file": "LIVE FILE", "tcp": "LIVE TCP"}[self.input_mode]
+        self.status_label.setText(f"● STARTING · {mode_label}")
+        self.status_label.setToolTip("Live reads run in a background QThread.")
+        if self.input_mode == "demo":
+            self.status_label.setText("● RUNNING · DEMO")
+            self.timer.start(1000)
+            return
+        self.monitoring_worker = MonitoringWorker(self.input_mode, self.detection_mode, parent=self)
+        self.monitoring_worker.traffic_received.connect(self.handle_worker_traffic)
+        self.monitoring_worker.detections_received.connect(self.handle_worker_detections)
+        self.monitoring_worker.issue_reported.connect(self.handle_worker_issue)
+        self.monitoring_worker.connection_state.connect(self.handle_worker_state)
+        self.monitoring_worker.start()
+
+    def handle_worker_traffic(self, records):
+        """Apply worker-delivered traffic on the GUI thread only."""
+        if not self.monitoring:
+            return
+        for record in records:
             try:
                 normalized = normalize_traffic_message(record)
             except (TypeError, ValueError) as exc:
@@ -421,43 +352,73 @@ class CanSentinelDashboard(QMainWindow):
                 continue
             self.traffic_records.append(normalized)
             self.message_count += 1
-        errors = getattr(self.sniffer_client, "errors", [])
-        if errors:
-            self.integration_error_count += len(errors)
-            self.status_label.setToolTip(
-                f"Skipped/received {len(errors)} input issue(s). Latest: {errors[-1]}"
-            )
-        self.poll_detection_results()
         self.apply_traffic_filters()
         self.update_summary()
 
-    def poll_detection_results(self):
-        """Consume detector alerts, mark matching traffic, and retain alert history."""
-        if self.detection_client is None:
+    def handle_worker_detections(self, results):
+        """Apply detector results on the GUI thread and suppress exact repeats."""
+        if not self.monitoring:
             return
-        for result in self.detection_client.poll(max_messages=100):
+        for result in results:
             try:
                 alert = normalize_detection_result(result)
             except (TypeError, ValueError) as exc:
                 self.integration_error_count += 1
                 self.status_label.setToolTip(f"Skipped invalid detection result: {exc}")
                 continue
+            fingerprint = (alert.get("timestamp", ""), alert["can_id"].upper(),
+                           alert["severity"], alert["reason"], alert.get("payload", "").upper())
+            if fingerprint in self._seen_detection_keys:
+                continue
+            self._seen_detection_keys.add(fingerprint)
             matched = self.match_detection_to_traffic(alert)
             alert["traffic_match"] = matched.get("timestamp", "No matching traffic") if matched else "No matching traffic"
             if matched:
                 matched["status"] = "SUSPICIOUS"
-                if "payload" not in alert or not alert["payload"]:
-                    alert["payload"] = matched["payload"]
+                if not alert.get("payload"):
+                    alert["payload"] = matched.get("payload", "")
             else:
                 alert.setdefault("payload", "")
             self.alert_history.append(alert)
-        errors = getattr(self.detection_client, "errors", [])
-        if errors:
-            self.integration_error_count += len(errors)
-            self.status_label.setToolTip(
-                f"Skipped/received {len(errors)} detection issue(s). Latest: {errors[-1]}"
-            )
         self.refresh_alert_table()
+        self.update_summary()
+
+    def handle_worker_issue(self, message):
+        self.integration_error_count += 1
+        self.status_label.setToolTip(message)
+
+    def handle_worker_state(self, state):
+        if state == "connected" and self.monitoring:
+            self.status_label.setText("● RUNNING · LIVE")
+        elif state == "error":
+            self.monitoring = False
+            self.status_label.setText("● ERROR")
+        elif state == "stopped" and not self.monitoring:
+            self.status_label.setText("● STOPPED")
+
+    def stop_monitoring(self):
+        self.monitoring = False
+        self.timer.stop()
+        worker = self.monitoring_worker
+        self.monitoring_worker = None
+        if worker is not None and worker.isRunning():
+            worker.stop()
+            worker.wait(2000)
+            if worker.isRunning():
+                self.status_label.setToolTip("Worker is still shutting down; wait before starting again.")
+                self.monitoring_worker = worker
+                return
+        self.status_label.setText("● STOPPED")
+        self.status_label.setObjectName("statusStopped")
+        self.status_label.style().unpolish(self.status_label)
+        self.status_label.style().polish(self.status_label)
+
+    def generate_can_message(self):
+        """Demo-only timer callback; live input is handled by MonitoringWorker."""
+        if self.input_mode == "demo" and self.monitoring:
+            self.generate_demo_message()
+            self.apply_traffic_filters()
+            self.update_summary()
 
     def match_detection_to_traffic(self, alert):
         """Match CAN ID and optional payload, preferring the most recent traffic row."""
@@ -553,7 +514,7 @@ class CanSentinelDashboard(QMainWindow):
 
     def apply_traffic_filters(self, *_):
         # Limit only visible rows to keep the interface responsive; records remain stored.
-        visible = self.get_filtered_traffic_records()[-200:]
+        visible = self.get_filtered_traffic_records()[-self.MAX_VISIBLE_TRAFFIC_ROWS:]
         self.traffic_table.setRowCount(0)
         for record in visible:
             row = self.traffic_table.rowCount()
@@ -566,7 +527,7 @@ class CanSentinelDashboard(QMainWindow):
                 self.traffic_table.setItem(row, column, item)
 
     def refresh_alert_table(self, *_):
-        filtered = self.get_filtered_alert_records()
+        filtered = self.get_filtered_alert_records()[-self.MAX_VISIBLE_ALERT_ROWS:]
         self.alert_table.setRowCount(0)
         for alert in filtered:
             row = self.alert_table.rowCount()
@@ -672,6 +633,7 @@ class CanSentinelDashboard(QMainWindow):
 
         self.traffic_records.clear()
         self.alert_history.clear()
+        self._seen_detection_keys.clear()
         self.message_count = 0
         self.alert_count = 0
         self.traffic_table.setRowCount(0)
@@ -700,6 +662,14 @@ class CanSentinelDashboard(QMainWindow):
         self.alert_count = alerts
 
 
+    def closeEvent(self, event):
+        """Stop background monitoring before the window is destroyed."""
+        self.stop_monitoring()
+        if self.monitoring_worker is not None and self.monitoring_worker.isRunning():
+            self.monitoring_worker.stop()
+            self.monitoring_worker.wait(2000)
+        event.accept()
+
 def main():
     app = QApplication(sys.argv)
     window = CanSentinelDashboard()
@@ -709,3 +679,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
