@@ -129,11 +129,55 @@ class TestCanSentinelDashboard(unittest.TestCase):
         self.assertFalse(self.window.timer.isActive())
 
     def test_demo_creates_alert_every_seventh_message(self):
+        # generate_can_message is a timer callback and intentionally does nothing
+        # while monitoring is stopped. Start the demo before simulating timer ticks.
+        self.window.start_monitoring()
         for _ in range(7):
             self.window.generate_can_message()
+        self.window.stop_monitoring()
+
         self.assertEqual(len(self.window.traffic_records), 7)
         self.assertEqual(self.window.traffic_records[-1]["status"], "SUSPICIOUS")
         self.assertEqual(len(self.window.alert_history), 1)
+
+    def test_valid_worker_traffic_is_normalized_and_displayed(self):
+        self.window.monitoring = True
+        self.window.handle_worker_traffic([{
+            "time": "2026-10-25T10:00:00Z",
+            "canId": "0x100",
+            "data": "aa bb cc",
+            "state": "normal",
+        }])
+        self.assertEqual(len(self.window.traffic_records), 1)
+        self.assertEqual(self.window.traffic_records[0]["can_id"], "0X100")
+        self.assertEqual(self.window.traffic_records[0]["payload"], "AA BB CC")
+        self.assertEqual(self.window.traffic_table.rowCount(), 1)
+
+    def test_malformed_worker_traffic_is_skipped_without_crash(self):
+        self.window.monitoring = True
+        self.window.handle_worker_traffic([{"timestamp": "bad", "payload": "AA"}])
+        self.assertEqual(self.window.traffic_records, [])
+        self.assertEqual(self.window.integration_error_count, 1)
+
+    def test_valid_detection_is_added_to_alert_history(self):
+        self.window.monitoring = True
+        self.window.handle_worker_detections([{
+            "ts": "2026-10-25T10:00:01Z",
+            "id": "0x666",
+            "level": "high",
+            "description": "Abnormal message rate",
+            "data": "01 02",
+        }])
+        self.assertEqual(len(self.window.alert_history), 1)
+        self.assertEqual(self.window.alert_history[0]["severity"], "HIGH")
+        self.assertEqual(self.window.alert_history[0]["reason"], "Abnormal message rate")
+        self.assertEqual(self.window.alert_table.rowCount(), 1)
+
+    def test_malformed_detection_is_skipped_without_crash(self):
+        self.window.monitoring = True
+        self.window.handle_worker_detections([{"can_id": "0x666", "severity": "unknown"}])
+        self.assertEqual(self.window.alert_history, [])
+        self.assertEqual(self.window.integration_error_count, 1)
 
 
 if __name__ == "__main__":
