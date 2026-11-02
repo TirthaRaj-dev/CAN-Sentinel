@@ -52,6 +52,7 @@ class CanSentinelDashboard(QMainWindow):
         super().__init__()
         self.setWindowTitle("CAN-Sentinel | Automotive ECU Intrusion Detection")
         self.resize(1280, 820)
+        self.setMinimumSize(960, 640)
 
         self.traffic_records = []
         self.alert_history = []
@@ -107,7 +108,7 @@ class CanSentinelDashboard(QMainWindow):
         self.setCentralWidget(root)
         outer = QVBoxLayout(root)
         outer.setContentsMargins(18, 16, 18, 16)
-        outer.setSpacing(12)
+        outer.setSpacing(14)
 
         header = QHBoxLayout()
         title_box = QVBoxLayout()
@@ -128,30 +129,36 @@ class CanSentinelDashboard(QMainWindow):
         outer.addLayout(header)
 
         summary = QGridLayout()
-        summary.setSpacing(10)
+        summary.setSpacing(12)
         self.total_card, self.total_value = self.make_card("TOTAL CAN MESSAGES")
         self.alert_card, self.alert_value = self.make_card("TOTAL ALERTS")
         self.normal_card, self.normal_value = self.make_card("NORMAL MESSAGES")
         self.threat_card, self.threat_value = self.make_card("LATEST ALERT")
-        summary.addWidget(self.total_card, 0, 0)
-        summary.addWidget(self.alert_card, 0, 1)
-        summary.addWidget(self.normal_card, 0, 2)
-        summary.addWidget(self.threat_card, 0, 3)
+        summary.addWidget(self.total_card, 0, 0, 1, 1)
+        summary.addWidget(self.alert_card, 0, 1, 1, 1)
+        summary.addWidget(self.normal_card, 0, 2, 1, 1)
+        summary.addWidget(self.threat_card, 0, 3, 1, 1)
+        for column in range(4):
+            summary.setColumnStretch(column, 1)
         outer.addLayout(summary)
 
         controls = QHBoxLayout()
+        controls.setSpacing(8)
         self.start_button = QPushButton("▶ Start Monitoring")
         self.start_button.setObjectName("primaryButton")
+        self.start_button.setMinimumHeight(38)
         self.start_button.clicked.connect(self.start_monitoring)
 
         self.stop_button = QPushButton("■ Stop Monitoring")
         self.stop_button.clicked.connect(self.stop_monitoring)
+        self.stop_button.setMinimumHeight(38)
 
         self.clear_display_button = QPushButton("Clear Traffic Display")
         self.clear_display_button.setToolTip(
             "Clears visible traffic rows only; stored records remain available for export."
         )
         self.clear_display_button.clicked.connect(self.clear_traffic_display)
+        self.clear_display_button.setMinimumHeight(38)
 
         self.clear_all_button = QPushButton("Clear All Session Data")
         self.clear_all_button.setObjectName("dangerButton")
@@ -159,6 +166,7 @@ class CanSentinelDashboard(QMainWindow):
             "Permanently clears traffic and alert records from this running session."
         )
         self.clear_all_button.clicked.connect(self.clear_all_session_data)
+        self.clear_all_button.setMinimumHeight(38)
 
         for button in (
             self.start_button,
@@ -171,26 +179,34 @@ class CanSentinelDashboard(QMainWindow):
         outer.addLayout(controls)
 
         self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
         outer.addWidget(self.tabs, 1)
 
         traffic_tab = QWidget()
         traffic_layout = QVBoxLayout(traffic_tab)
+        traffic_layout.setContentsMargins(12, 12, 12, 12)
+        traffic_layout.setSpacing(10)
         filter_row = QHBoxLayout()
+        filter_row.setSpacing(8)
         filter_row.addWidget(QLabel("CAN ID:"))
 
         self.can_id_filter = QLineEdit()
         self.can_id_filter.setPlaceholderText("e.g. 0x100")
         self.can_id_filter.textChanged.connect(self.apply_traffic_filters)
-        filter_row.addWidget(self.can_id_filter)
+        self.can_id_filter.setMinimumWidth(130)
+        self.can_id_filter.setMaximumWidth(240)
+        filter_row.addWidget(self.can_id_filter, 1)
 
         filter_row.addWidget(QLabel("Status:"))
         self.status_filter = QComboBox()
         self.status_filter.addItems(["All", "NORMAL", "SUSPICIOUS"])
         self.status_filter.currentTextChanged.connect(self.apply_traffic_filters)
+        self.status_filter.setMinimumWidth(125)
         filter_row.addWidget(self.status_filter)
 
         self.export_traffic_button = QPushButton("Export Filtered Traffic CSV")
         self.export_traffic_button.clicked.connect(self.export_filtered_traffic)
+        self.export_traffic_button.setMinimumHeight(36)
         filter_row.addWidget(self.export_traffic_button)
         traffic_layout.addLayout(filter_row)
 
@@ -203,28 +219,39 @@ class CanSentinelDashboard(QMainWindow):
         header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.traffic_table.setAlternatingRowColors(True)
         self.traffic_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.traffic_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.traffic_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.traffic_table.verticalHeader().setVisible(False)
+        self.traffic_table.verticalHeader().setDefaultSectionSize(30)
+        self.traffic_table.setWordWrap(False)
         traffic_layout.addWidget(self.traffic_table)
         self.tabs.addTab(traffic_tab, "CAN Traffic")
 
         alert_tab = QWidget()
         alert_layout = QVBoxLayout(alert_tab)
+        alert_layout.setContentsMargins(12, 12, 12, 12)
+        alert_layout.setSpacing(10)
         alert_controls = QHBoxLayout()
+        alert_controls.setSpacing(8)
         alert_controls.addWidget(QLabel("Severity:"))
 
         self.severity_filter = QComboBox()
         self.severity_filter.addItems(["All", "LOW", "MEDIUM", "HIGH", "CRITICAL"])
         self.severity_filter.currentTextChanged.connect(self.refresh_alert_table)
+        self.severity_filter.setMinimumWidth(120)
         alert_controls.addWidget(self.severity_filter)
 
         alert_controls.addWidget(QLabel("Reason contains:"))
         self.reason_filter = QLineEdit()
         self.reason_filter.setPlaceholderText("Search alert reason")
         self.reason_filter.textChanged.connect(self.refresh_alert_table)
-        alert_controls.addWidget(self.reason_filter)
+        self.reason_filter.setMinimumWidth(150)
+        alert_controls.addWidget(self.reason_filter, 1)
 
         self.export_alerts_button = QPushButton("Export Alert History CSV")
         self.export_alerts_button.setObjectName("primaryButton")
         self.export_alerts_button.clicked.connect(self.export_alert_history)
+        self.export_alerts_button.setMinimumHeight(36)
         alert_controls.addWidget(self.export_alerts_button)
 
         self.clear_alert_display_button = QPushButton("Clear Alert Display")
@@ -232,6 +259,7 @@ class CanSentinelDashboard(QMainWindow):
             "Clears visible alert rows only; stored alert history remains available for export."
         )
         self.clear_alert_display_button.clicked.connect(self.clear_alert_display)
+        self.clear_alert_display_button.setMinimumHeight(36)
         alert_controls.addWidget(self.clear_alert_display_button)
         alert_layout.addLayout(alert_controls)
 
@@ -242,8 +270,14 @@ class CanSentinelDashboard(QMainWindow):
             header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.Stretch)
         header.setSectionResizeMode(4, QHeaderView.Stretch)
+        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
         self.alert_table.setAlternatingRowColors(True)
         self.alert_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.alert_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.alert_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.alert_table.verticalHeader().setVisible(False)
+        self.alert_table.verticalHeader().setDefaultSectionSize(30)
+        self.alert_table.setWordWrap(False)
         alert_layout.addWidget(self.alert_table)
         self.tabs.addTab(alert_tab, "Alert History")
 
@@ -263,8 +297,9 @@ class CanSentinelDashboard(QMainWindow):
             }
             QLabel#mainTitle { font-size: 22pt; font-weight: 700; color: #f4f7fb; }
             QLabel#subtitle, QLabel#note { color: #9fb0c5; }
-            QLabel#statusStopped { color: #ff7777; font-weight: 700; padding: 8px 12px; }
-            QLabel#statusRunning { color: #5ce0a0; font-weight: 700; padding: 8px 12px; }
+            QLabel#statusStopped { color: #ff8b8b; background: #3b2028; border: 1px solid #713440; border-radius: 8px; font-weight: 700; padding: 8px 12px; }
+            QLabel#statusRunning { color: #72efb4; background: #173b32; border: 1px solid #2d765e; border-radius: 8px; font-weight: 700; padding: 8px 12px; }
+            QLabel#statusStarting { color: #f4d35e; background: #443b1b; border: 1px solid #75642a; border-radius: 8px; font-weight: 700; padding: 8px 12px; }
             QFrame#summaryCard {
                 background: #192536; border: 1px solid #2b3b51; border-radius: 10px;
             }
@@ -272,7 +307,7 @@ class CanSentinelDashboard(QMainWindow):
             QLabel#cardValue { color: #ffffff; font-size: 20pt; font-weight: 700; }
             QPushButton {
                 background: #26364b; color: #f4f7fb; border: 1px solid #3a4e68;
-                border-radius: 6px; padding: 9px 12px;
+                border-radius: 6px; padding: 9px 12px; min-height: 18px;
             }
             QPushButton:hover { background: #324761; }
             QPushButton#primaryButton { background: #1976d2; border-color: #1976d2; }
@@ -280,11 +315,11 @@ class CanSentinelDashboard(QMainWindow):
             QPushButton#dangerButton { background: #782f3b; border-color: #9a3d4c; }
             QLineEdit, QComboBox {
                 background: #172333; color: #e8eef7; border: 1px solid #34475e;
-                border-radius: 5px; padding: 7px;
+                border-radius: 5px; padding: 7px; min-height: 18px;
             }
             QTableWidget {
                 background: #131d2a; alternate-background-color: #192638;
-                gridline-color: #2a3b50; border: 1px solid #2a3b50;
+                gridline-color: #2a3b50; border: 1px solid #2a3b50; selection-background-color: #315b86;
             }
             QHeaderView::section {
                 background: #223249; color: #e8eef7; padding: 8px;
@@ -302,12 +337,14 @@ class CanSentinelDashboard(QMainWindow):
         card = QFrame()
         card.setObjectName("summaryCard")
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(8)
         label = QLabel(label_text)
         label.setObjectName("cardLabel")
         value = QLabel("0")
         value.setObjectName("cardValue")
         value.setWordWrap(True)
+        value.setMinimumHeight(30)
         layout.addWidget(label)
         layout.addWidget(value)
         return card, value
@@ -326,10 +363,16 @@ class CanSentinelDashboard(QMainWindow):
             return
         self.monitoring = True
         mode_label = {"demo": "DEMO", "file": "LIVE FILE", "tcp": "LIVE TCP"}[self.input_mode]
+        self.status_label.setObjectName("statusStarting")
         self.status_label.setText(f"● STARTING · {mode_label}")
+        self.status_label.style().unpolish(self.status_label)
+        self.status_label.style().polish(self.status_label)
         self.status_label.setToolTip("Live reads run in a background QThread.")
         if self.input_mode == "demo":
+            self.status_label.setObjectName("statusRunning")
             self.status_label.setText("● RUNNING · DEMO")
+            self.status_label.style().unpolish(self.status_label)
+            self.status_label.style().polish(self.status_label)
             self.timer.start(1000)
             return
         self.monitoring_worker = MonitoringWorker(self.input_mode, self.detection_mode, parent=self)
@@ -389,10 +432,16 @@ class CanSentinelDashboard(QMainWindow):
 
     def handle_worker_state(self, state):
         if state == "connected" and self.monitoring:
+            self.status_label.setObjectName("statusRunning")
             self.status_label.setText("● RUNNING · LIVE")
+            self.status_label.style().unpolish(self.status_label)
+            self.status_label.style().polish(self.status_label)
         elif state == "error":
             self.monitoring = False
+            self.status_label.setObjectName("statusStopped")
             self.status_label.setText("● ERROR")
+            self.status_label.style().unpolish(self.status_label)
+            self.status_label.style().polish(self.status_label)
         elif state == "stopped" and not self.monitoring:
             self.status_label.setText("● STOPPED")
 
