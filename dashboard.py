@@ -3,6 +3,7 @@ import os
 import random
 import sys
 from datetime import datetime
+from pathlib import Path
 
 from PyQt5.QtCore import QTimer, Qt
 
@@ -168,11 +169,19 @@ class CanSentinelDashboard(QMainWindow):
         self.clear_all_button.clicked.connect(self.clear_all_session_data)
         self.clear_all_button.setMinimumHeight(38)
 
+        self.screenshot_button = QPushButton("Save Dashboard Screenshot")
+        self.screenshot_button.setToolTip(
+            "Capture the current dashboard window and save a PNG in docs/screenshots."
+        )
+        self.screenshot_button.setMinimumHeight(38)
+        self.screenshot_button.clicked.connect(self.save_dashboard_screenshot)
+
         for button in (
             self.start_button,
             self.stop_button,
             self.clear_display_button,
             self.clear_all_button,
+            self.screenshot_button,
         ):
             controls.addWidget(button)
         controls.addStretch()
@@ -332,6 +341,31 @@ class CanSentinelDashboard(QMainWindow):
             }
             QTabBar::tab:selected { background: #263c56; color: white; }
         """)
+
+    def save_dashboard_screenshot(self):
+        """Capture the visible dashboard and save a timestamped PNG."""
+        screenshot_dir = Path(__file__).resolve().parent / "docs" / "screenshots"
+        try:
+            screenshot_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            screenshot_path = screenshot_dir / f"dashboard_{timestamp}.png"
+
+            if not self.grab().save(str(screenshot_path), "PNG"):
+                raise OSError("Qt could not encode the dashboard image.")
+
+        except OSError as error:
+            QMessageBox.warning(
+                self,
+                "Screenshot Failed",
+                f"Could not save the dashboard screenshot:\\n{error}",
+            )
+            return
+
+        QMessageBox.information(
+            self,
+            "Screenshot Saved",
+            f"Dashboard screenshot saved to:\\n{screenshot_path}",
+        )
 
     def make_card(self, label_text):
         card = QFrame()
@@ -728,4 +762,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
