@@ -176,12 +176,20 @@ class CanSentinelDashboard(QMainWindow):
         self.screenshot_button.setMinimumHeight(38)
         self.screenshot_button.clicked.connect(self.save_dashboard_screenshot)
 
+        self.session_report_button = QPushButton("Export Session Report")
+        self.session_report_button.setToolTip(
+            "Export session totals, source modes, and recorded alerts to a text report."
+        )
+        self.session_report_button.setMinimumHeight(38)
+        self.session_report_button.clicked.connect(self.export_session_report)
+
         for button in (
             self.start_button,
             self.stop_button,
             self.clear_display_button,
             self.clear_all_button,
             self.screenshot_button,
+            self.session_report_button,
         ):
             controls.addWidget(button)
         controls.addStretch()
@@ -365,6 +373,80 @@ class CanSentinelDashboard(QMainWindow):
             self,
             "Screenshot Saved",
             f"Dashboard screenshot saved to:\\n{screenshot_path}",
+        )
+
+    def export_session_report(self):
+        """Export a readable summary of the current session for project evidence."""
+        total_traffic = len(self.traffic_records)
+        normal_count = sum(
+            record.get("status") == "NORMAL" for record in self.traffic_records
+        )
+        suspicious_count = sum(
+            record.get("status") == "SUSPICIOUS" for record in self.traffic_records
+        )
+        severity_counts = {
+            severity: sum(
+                alert.get("severity", "").upper() == severity
+                for alert in self.alert_history
+            )
+            for severity in ("LOW", "MEDIUM", "HIGH", "CRITICAL")
+        }
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Session Report", "can_sentinel_session_report.txt",
+            "Text Reports (*.txt)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".txt"):
+            path += ".txt"
+
+        lines = [
+            "CAN-Sentinel Session Report",
+            "=" * 30,
+            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Input source: {self.input_mode}",
+            f"Detection source: {self.detection_mode}",
+            f"Monitoring active: {'Yes' if self.monitoring else 'No'}",
+            "",
+            "Traffic Summary",
+            "-" * 30,
+            f"Total messages: {total_traffic}",
+            f"Normal messages: {normal_count}",
+            f"Suspicious messages: {suspicious_count}",
+            f"Stored alerts: {len(self.alert_history)}",
+            f"Integration errors: {self.integration_error_count}",
+            "",
+            "Alert Severity Summary",
+            "-" * 30,
+        ]
+        lines.extend(f"{severity}: {count}" for severity, count in severity_counts.items())
+        lines.extend(["", "Alert Details", "-" * 30])
+        if self.alert_history:
+            for index, alert in enumerate(self.alert_history, start=1):
+                lines.extend([
+                    f"{index}. [{alert.get('severity', 'UNKNOWN')}] "
+                    f"{alert.get('timestamp', 'No timestamp')} | "
+                    f"CAN ID: {alert.get('can_id', 'Unknown')}",
+                    f"   Reason: {alert.get('reason', 'No reason supplied')}",
+                    f"   Payload: {alert.get('payload', '')}",
+                    f"   Traffic match: {alert.get('traffic_match', 'Not recorded')}",
+                ])
+        else:
+            lines.append("No alerts recorded in this session.")
+
+        try:
+            with open(path, "w", encoding="utf-8") as report_file:
+                report_file.write("\\n".join(lines) + "\\n")
+        except (OSError, UnicodeError) as error:
+            QMessageBox.critical(
+                self, "Report export failed", f"Could not write the session report:\\n{error}"
+            )
+            return
+
+        QMessageBox.information(
+            self, "Report exported",
+            f"Session report saved successfully:\\n{path}",
         )
 
     def make_card(self, label_text):
