@@ -150,6 +150,13 @@ class CanSentinelDashboard(QMainWindow):
         self.start_button.setMinimumHeight(38)
         self.start_button.clicked.connect(self.start_monitoring)
 
+        self.fallback_button = QPushButton("Start Simulated Fallback")
+        self.fallback_button.setToolTip(
+            "Switch to simulated traffic and start the dashboard fallback demonstration."
+        )
+        self.fallback_button.setMinimumHeight(38)
+        self.fallback_button.clicked.connect(self.start_fallback_demo)
+
         self.stop_button = QPushButton("■ Stop Monitoring")
         self.stop_button.clicked.connect(self.stop_monitoring)
         self.stop_button.setMinimumHeight(38)
@@ -185,6 +192,7 @@ class CanSentinelDashboard(QMainWindow):
 
         for button in (
             self.start_button,
+            self.fallback_button,
             self.stop_button,
             self.clear_display_button,
             self.clear_all_button,
@@ -464,6 +472,22 @@ class CanSentinelDashboard(QMainWindow):
         layout.addWidget(label)
         layout.addWidget(value)
         return card, value
+
+    def start_fallback_demo(self):
+        """Switch to simulated traffic and start the documented fallback demo."""
+        if self.monitoring:
+            QMessageBox.information(
+                self,
+                "Monitoring already active",
+                "Stop the current monitoring session before switching to fallback mode.",
+            )
+            return
+
+        os.environ["CAN_SENTINEL_SOURCE"] = "demo"
+        os.environ["CAN_SENTINEL_DETECTION_SOURCE"] = "off"
+        self.input_mode = "demo"
+        self.detection_mode = "off"
+        self.start_monitoring()
 
     def start_monitoring(self):
         """Start demo timer or move live sniffer/detector reads into a QThread."""
